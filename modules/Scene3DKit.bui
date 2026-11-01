@@ -1,0 +1,536 @@
+Private Sub Check3D(value As Double, limit As Double = 1000000.0)
+    If Not (value >= -limit And value <= limit) Then Throw New InvalidArgumentException("3D value is nonfinite or outside its bound")
+End Sub
+
+Private Sub CheckColor3D(tint As Color)
+    If tint Is Nil Then Throw New InvalidArgumentException("Tint required")
+    If Not (tint.R >= 0.0 And tint.R <= 1.0 And tint.G >= 0.0 And tint.G <= 1.0 And tint.B >= 0.0 And tint.B <= 1.0 And tint.A >= 0.0 And tint.A <= 1.0) Then Throw New InvalidArgumentException("Tint channels must be in 0..1")
+End Sub
+
+Public Class Vec3D
+    Private Property mX As Double
+    Public Property X As Double
+        Get
+            Return mX
+        End Get
+    End Property
+    Private Property mY As Double
+    Public Property Y As Double
+        Get
+            Return mY
+        End Get
+    End Property
+    Private Property mZ As Double
+    Public Property Z As Double
+        Get
+            Return mZ
+        End Get
+    End Property
+    Public Sub Constructor(x As Double, y As Double, z As Double)
+        Check3D(x)
+        Check3D(y)
+        Check3D(z)
+        mX = x
+        mY = y
+        mZ = z
+    End Sub
+End Class
+
+Public Class PointLight3D
+    Public Property CastShadows As Boolean = False
+    Public Property Position As Vec3D = New Vec3D(0.0, 0.0, 0.0)
+    Public Property Color As Color = Color.White
+    Public Property Intensity As Double = 0.0
+    Public Property Range As Double = 10.0
+    Public Sub Validate()
+        If Me.Position Is Nil Then Throw New InvalidArgumentException("Point light position required")
+        CheckColor3D(Me.Color)
+        If Not (Me.Intensity >= 0.0 And Me.Intensity <= 1000000000.0) Then Throw New InvalidArgumentException("Point light intensity must be finite in 0..1000000000")
+        If Not (Me.Range >= 0.001 And Me.Range <= 1000000.0) Then Throw New InvalidArgumentException("Point light range must be finite in 0.001..1000000")
+    End Sub
+End Class
+
+Public Class SpotLight3D
+    Public Property CastShadows As Boolean = False
+    Public Property Position As Vec3D = New Vec3D(0.0, 0.0, 0.0)
+    Public Property Direction As Vec3D = New Vec3D(0.0, -1.0, 0.0)
+    Public Property Color As Color = Color.White
+    Public Property Intensity As Double = 0.0
+    Public Property Range As Double = 20.0
+    Public Property InnerAngle As Double = 0.4
+    Public Property OuterAngle As Double = 0.8
+    Public Sub Validate()
+        If Me.Position Is Nil Or Me.Direction Is Nil Then Throw New InvalidArgumentException("Spot light position/direction required")
+        CheckColor3D(Me.Color)
+        If Not (Me.Intensity >= 0.0 And Me.Intensity <= 1000000000.0) Then Throw New InvalidArgumentException("Spot light intensity must be finite in 0..1000000000")
+        If Not (Me.Range >= 0.001 And Me.Range <= 1000000.0) Then Throw New InvalidArgumentException("Spot light range must be finite in 0.001..1000000")
+        If Not (Me.InnerAngle >= 0.0 And Me.InnerAngle < Me.OuterAngle And Me.OuterAngle <= 1.570796326794897) Then Throw New InvalidArgumentException("Spot cone must satisfy 0 <= inner < outer <= pi/2 radians")
+        Dim length As Double = Me.Direction.X * Me.Direction.X + Me.Direction.Y * Me.Direction.Y + Me.Direction.Z * Me.Direction.Z
+        If length < 0.000000000001 Then Throw New InvalidArgumentException("Spot direction must be nonzero")
+    End Sub
+End Class
+
+Public Class Texture3D
+    Public Property Image As Picture
+    Public Property Encoded As Bytes
+    Public Property MimeType As String = "image/png"
+    Public Property WrapS As Integer = 10497
+    Public Property WrapT As Integer = 10497
+    Public Property MinFilter As Integer = 9987
+    Public Property MagFilter As Integer = 9729
+    Public Sub Constructor(image As Picture)
+        Me.Image = image
+    End Sub
+End Class
+
+Public Class Material3D
+    Public Property BaseColor As Color = Color.White
+    Public Property Metallic As Double = 1.0
+    Public Property Roughness As Double = 1.0
+    Public Property Emissive As Color = Color.Black
+    Public Property EmissiveStrength As Double = 1.0
+    Public Property Unlit As Boolean = False
+    Public Property NormalScale As Double = 1.0
+    Public Property OcclusionStrength As Double = 1.0
+    Public Property AlphaMode As String = "OPAQUE"
+    Public Property AlphaCutoff As Double = 0.5
+    Public Property DoubleSided As Boolean = False
+    Public Property BaseColorTexture As Texture3D
+    Public Property BaseColorTexCoord As Integer = 0
+    Public Property MetallicRoughnessTexture As Texture3D
+    Public Property MetallicRoughnessTexCoord As Integer = 0
+    Public Property NormalTexture As Texture3D
+    Public Property NormalTexCoord As Integer = 0
+    Public Property OcclusionTexture As Texture3D
+    Public Property OcclusionTexCoord As Integer = 0
+    Public Property EmissiveTexture As Texture3D
+    Public Property EmissiveTexCoord As Integer = 0
+    Public Sub Validate()
+        CheckColor3D(Me.BaseColor)
+        CheckColor3D(Me.Emissive)
+        If Not (Me.EmissiveStrength >= 0.0 And Me.EmissiveStrength <= 1000.0) Then Throw New InvalidArgumentException("Emissive strength must be finite in 0..1000")
+        If Not (Me.Metallic >= 0.0 And Me.Metallic <= 1.0 And Me.Roughness >= 0.0 And Me.Roughness <= 1.0) Then Throw New InvalidArgumentException("Metallic/roughness must be 0..1")
+        If Not (Me.NormalScale >= -1000000.0 And Me.NormalScale <= 1000000.0 And Me.OcclusionStrength >= 0.0 And Me.OcclusionStrength <= 1.0) Then Throw New InvalidArgumentException("Invalid normal scale or occlusion strength")
+        If Not (Me.AlphaCutoff >= 0.0 And Me.AlphaCutoff <= 1000000.0) Then Throw New InvalidArgumentException("Alpha cutoff must be finite in 0..1000000")
+        If String.Compare(Me.AlphaMode, "OPAQUE", True) <> 0 And String.Compare(Me.AlphaMode, "MASK", True) <> 0 And String.Compare(Me.AlphaMode, "BLEND", True) <> 0 And String.Compare(Me.AlphaMode, "ADD", True) <> 0 Then Throw New InvalidArgumentException("Invalid alpha mode")
+        If Me.BaseColorTexCoord <> 0 And Me.BaseColorTexCoord <> 1 Then Throw New InvalidArgumentException("Texture UV set must be 0 or 1")
+        If Me.MetallicRoughnessTexCoord <> 0 And Me.MetallicRoughnessTexCoord <> 1 Then Throw New InvalidArgumentException("Texture UV set must be 0 or 1")
+        If Me.NormalTexCoord <> 0 And Me.NormalTexCoord <> 1 Then Throw New InvalidArgumentException("Texture UV set must be 0 or 1")
+        If Me.OcclusionTexCoord <> 0 And Me.OcclusionTexCoord <> 1 Then Throw New InvalidArgumentException("Texture UV set must be 0 or 1")
+        If Me.EmissiveTexCoord <> 0 And Me.EmissiveTexCoord <> 1 Then Throw New InvalidArgumentException("Texture UV set must be 0 or 1")
+    End Sub
+End Class
+
+Public Class Triangle3D
+    Public Property NormalA As Vec3D
+    Public Property NormalB As Vec3D
+    Public Property NormalC As Vec3D
+    Public Property UV0A As Vec3D
+    Public Property UV0B As Vec3D
+    Public Property UV0C As Vec3D
+    Public Property UV1A As Vec3D
+    Public Property UV1B As Vec3D
+    Public Property UV1C As Vec3D
+    Public Property Material As Material3D
+    Private Property mA As Vec3D
+    Public Property A As Vec3D
+        Get
+            Return mA
+        End Get
+    End Property
+    Private Property mB As Vec3D
+    Public Property B As Vec3D
+        Get
+            Return mB
+        End Get
+    End Property
+    Private Property mC As Vec3D
+    Public Property C As Vec3D
+        Get
+            Return mC
+        End Get
+    End Property
+    Private Property mTint As Color
+    Public Property Tint As Color
+        Get
+            Return mTint
+        End Get
+    End Property
+    Public Sub Constructor(a As Vec3D, b As Vec3D, c As Vec3D, tint As Color)
+        If a Is Nil Or b Is Nil Or c Is Nil Then Throw New InvalidArgumentException("Triangle vertices required")
+        mA = a
+        mB = b
+        mC = c
+        If tint IsNot Nil Then CheckColor3D(tint)
+        mTint = tint
+    End Sub
+End Class
+
+Public Class Mesh3D
+    Private Property mTriangles As Array Of Triangle3D
+    Public Property Count As Integer
+        Get
+            Return Array.Count(mTriangles)
+        End Get
+    End Property
+    Public Sub AddTriangle(a As Vec3D, b As Vec3D, c As Vec3D)
+        Me.AddTriangle(a, b, c, Nil)
+    End Sub
+    Public Sub AddTriangle(a As Vec3D, b As Vec3D, c As Vec3D, tint As Color)
+        If Me.Count >= 131072 Then Throw New InvalidArgumentException("Mesh triangle budget exceeded")
+        Array.Append(mTriangles, New Triangle3D(a, b, c, tint))
+    End Sub
+    Public Sub AddSurfaceTriangle(a As Vec3D, b As Vec3D, c As Vec3D, na As Vec3D, nb As Vec3D, nc As Vec3D, uv0a As Vec3D, uv0b As Vec3D, uv0c As Vec3D, uv1a As Vec3D, uv1b As Vec3D, uv1c As Vec3D, material As Material3D)
+        If Me.Count >= 131072 Then Throw New InvalidArgumentException("Mesh triangle budget exceeded")
+        If material Is Nil Then Throw New InvalidArgumentException("Surface material required")
+        material.Validate()
+        Dim triangle As New Triangle3D(a, b, c, material.BaseColor)
+        triangle.NormalA = na
+        triangle.NormalB = nb
+        triangle.NormalC = nc
+        triangle.UV0A = uv0a
+        triangle.UV0B = uv0b
+        triangle.UV0C = uv0c
+        triangle.UV1A = uv1a
+        triangle.UV1B = uv1b
+        triangle.UV1C = uv1c
+        triangle.Material = material
+        Array.Append(mTriangles, triangle)
+    End Sub
+    Public Function Triangles() As Array Of Triangle3D
+        Return Array.Clone(mTriangles)
+    End Function
+End Class
+
+Public Class MeshActor3D
+    Private Property mMesh As Mesh3D
+    Public Property Tint As Color
+    Public Property X As Double = 0.0
+    Public Property Y As Double = 0.0
+    Public Property Z As Double = 0.0
+    Public Property ScaleX As Double = 1.0
+    Public Property ScaleY As Double = 1.0
+    Public Property ScaleZ As Double = 1.0
+    Public Property RotationY As Double = 0.0
+    Public Property Visible As Boolean = True
+    Public Property Metallic As Double = 0.3
+    Public Property Roughness As Double = 0.28
+    Public Property MaterialOverride As Material3D
+    Public Sub Constructor(mesh As Mesh3D, tint As Color)
+        If mesh Is Nil Or tint Is Nil Then Throw New InvalidArgumentException("Mesh and tint required")
+        mMesh = mesh
+        Me.Tint = tint
+    End Sub
+    Public Function Mesh() As Mesh3D
+        Return mMesh
+    End Function
+    Public Sub SetMesh(mesh As Mesh3D)
+        If mesh Is Nil Then Throw New InvalidArgumentException("Actor mesh required")
+        mMesh = mesh
+    End Sub
+    Public Sub Validate()
+        Check3D(Me.X, 10000.0)
+        Check3D(Me.Y, 10000.0)
+        Check3D(Me.Z, 10000.0)
+        Check3D(Me.ScaleX, 10000.0)
+        Check3D(Me.ScaleY, 10000.0)
+        Check3D(Me.ScaleZ, 10000.0)
+        Check3D(Me.RotationY)
+        If Not (Me.Metallic >= 0.0 And Me.Metallic <= 1.0 And Me.Roughness >= 0.0 And Me.Roughness <= 1.0) Then Throw New InvalidArgumentException("Metallic and roughness must be in 0..1")
+        If Me.MaterialOverride IsNot Nil Then Me.MaterialOverride.Validate()
+        CheckColor3D(Me.Tint)
+    End Sub
+    Public Function Transform(point As Vec3D) As Vec3D
+        Dim sx As Double = point.X * Me.ScaleX
+        Dim sz As Double = point.Z * Me.ScaleZ
+        Return New Vec3D(sx * Math.Cos(Me.RotationY) + sz * Math.Sin(Me.RotationY) + Me.X, point.Y * Me.ScaleY + Me.Y, -sx * Math.Sin(Me.RotationY) + sz * Math.Cos(Me.RotationY) + Me.Z)
+    End Function
+End Class
+
+Public Class Camera3D
+    Public Property Distance As Double = 6.0
+    Public Property TargetY As Double = 0.0
+    Public Property FocalLength As Double = 0.95
+    Public Property NearPlane As Double = 0.05
+    Private Property mYaw As Double = 0.0
+    Private Property mPitch As Double = 0.0
+    Public Property Yaw As Double
+        Get
+            Return mYaw
+        End Get
+    End Property
+    Public Property Pitch As Double
+        Get
+            Return mPitch
+        End Get
+    End Property
+    Public Sub Orbit(yawRadians As Double, pitchRadians As Double)
+        Check3D(yawRadians)
+        Check3D(pitchRadians)
+        mYaw = yawRadians
+        mPitch = Math.Max(-1.5, Math.Min(1.5, pitchRadians))
+    End Sub
+    Public Sub Validate()
+        If Not (Me.Distance >= 0.1 And Me.Distance <= 10000.0) Then Throw New InvalidArgumentException("Camera distance must be 0.1..10000")
+        If Not (Me.FocalLength >= 0.1 And Me.FocalLength <= 10.0) Then Throw New InvalidArgumentException("Focal length must be 0.1..10")
+        If Not (Me.NearPlane >= 0.001 And Me.NearPlane <= 100.0) Then Throw New InvalidArgumentException("Near plane must be 0.001..100")
+        Check3D(Me.TargetY, 10000.0)
+    End Sub
+    Public Function View(point As Vec3D) As Vec3D
+        Dim vx As Double = point.X * Math.Cos(mYaw) - point.Z * Math.Sin(mYaw)
+        Dim vz As Double = point.X * Math.Sin(mYaw) + point.Z * Math.Cos(mYaw)
+        Dim vy As Double = point.Y - Me.TargetY
+        Return New Vec3D(vx, vy * Math.Cos(mPitch) - vz * Math.Sin(mPitch), Me.Distance - vy * Math.Sin(mPitch) - vz * Math.Cos(mPitch))
+    End Function
+End Class
+
+Private Class Face3D
+    Public Property Points As Array Of Vec3D
+    Public Property Depth As Double
+    Public Property Tint As Color
+End Class
+
+Private Function CompareFace3D(a As Face3D, b As Face3D) As Integer
+    If a.Depth > b.Depth Then Return -1
+    If a.Depth < b.Depth Then Return 1
+    Return 0
+End Function
+
+Private Function ClipPlane3D(points As Array Of Vec3D, nx As Double, ny As Double, nz As Double, offset As Double) As Array Of Vec3D
+    Dim output() As Vec3D
+    If Array.Count(points) = 0 Then Return output
+    Dim insideCount As Integer = 0
+    For Each sample As Vec3D In points
+        If sample.X * nx + sample.Y * ny + sample.Z * nz + offset >= 0.0 Then insideCount += 1
+    Next
+    If insideCount = Array.Count(points) Then Return points
+    If insideCount = 0 Then Return output
+    Dim previous As Vec3D = points(Array.Count(points) - 1)
+    Dim prevDistance As Double = previous.X * nx + previous.Y * ny + previous.Z * nz + offset
+    For Each current As Vec3D In points
+        Dim currDistance As Double = current.X * nx + current.Y * ny + current.Z * nz + offset
+        Dim prevInside As Boolean = prevDistance >= 0.0
+        Dim currInside As Boolean = currDistance >= 0.0
+        If prevInside <> currInside Then
+            Dim t As Double = prevDistance / (prevDistance - currDistance)
+            Array.Append(output, New Vec3D(previous.X + t * (current.X - previous.X), previous.Y + t * (current.Y - previous.Y), previous.Z + t * (current.Z - previous.Z)))
+        End If
+        If currInside Then Array.Append(output, current)
+        previous = current
+        prevDistance = currDistance
+    Next
+    Return output
+End Function
+
+Public Class Scene3D
+    Private Property mActors As Array Of MeshActor3D
+    Private Property mDrawn As Integer = 0
+    Public Property LastDrawnFaces As Integer
+        Get
+            Return mDrawn
+        End Get
+    End Property
+    Public Property Count As Integer
+        Get
+            Return Array.Count(mActors)
+        End Get
+    End Property
+    Public Function Actors() As Array Of MeshActor3D
+        Return Array.Clone(mActors)
+    End Function
+    Public Sub Add(actor As MeshActor3D)
+        If actor Is Nil Then Throw New InvalidArgumentException("Actor required")
+        If Me.Count >= 256 Then Throw New InvalidArgumentException("Scene actor budget exceeded")
+        For Each existing As MeshActor3D In mActors
+            If existing Is actor Then Throw New InvalidArgumentException("Duplicate scene actor")
+        Next
+        Array.Append(mActors, actor)
+    End Sub
+    Public Function Remove(actor As MeshActor3D) As Boolean
+        For i As Integer = 0 To Me.Count - 1
+            If mActors(i) Is actor Then
+                Array.RemoveAt(mActors, i)
+                Return True
+            End If
+        Next
+        Return False
+    End Function
+    Public Sub Clear()
+        Array.Clear(mActors)
+    End Sub
+    Public Sub Draw(g As IGraphics, camera As Camera3D, width As Double, height As Double)
+        If g Is Nil Or camera Is Nil Then Throw New InvalidArgumentException("Graphics and camera required")
+        If Not (width > 0.0 And width <= 16384.0 And height > 0.0 And height <= 16384.0) Then Throw New InvalidArgumentException("Viewport dimensions must be 0..16384")
+        camera.Validate()
+        Dim triangleCount As Integer = 0
+        For Each actor As MeshActor3D In mActors
+            If actor.Visible Then
+                actor.Validate()
+                triangleCount += actor.Mesh().Count
+            End If
+        Next
+        If triangleCount > 262144 Then Throw New InvalidArgumentException("Scene triangle budget exceeded")
+        Dim focal As Double = Math.Min(width, height) * camera.FocalLength
+        Dim halfWidth As Double = width * 0.5 / focal
+        Dim halfHeight As Double = height * 0.5 / focal
+        Dim faces() As Face3D
+        For Each actor As MeshActor3D In mActors
+            If Not actor.Visible Then Continue For
+            For Each triangle As Triangle3D In actor.Mesh().Triangles()
+                Dim a As Vec3D = camera.View(actor.Transform(triangle.A))
+                Dim b As Vec3D = camera.View(actor.Transform(triangle.B))
+                Dim c As Vec3D = camera.View(actor.Transform(triangle.C))
+                Dim ux As Double = b.X - a.X
+                Dim uy As Double = b.Y - a.Y
+                Dim uz As Double = b.Z - a.Z
+                Dim vx As Double = c.X - a.X
+                Dim vy As Double = c.Y - a.Y
+                Dim vz As Double = c.Z - a.Z
+                Dim nx As Double = uy * vz - uz * vy
+                Dim ny As Double = uz * vx - ux * vz
+                Dim nz As Double = ux * vy - uy * vx
+                Dim length As Double = Math.Sqrt(nx * nx + ny * ny + nz * nz)
+                If length < 0.000000001 Then Continue For
+                ' Two-sided materials: orient the geometric normal toward the eye.
+                If nx * a.X + ny * a.Y + nz * a.Z > 0.0 Then
+                    nx = -nx
+                    ny = -ny
+                    nz = -nz
+                End If
+                nx /= length
+                ny /= length
+                nz /= length
+                Dim diffuse As Double = Math.Max(0.0, nx * -0.4 + ny * 0.55 - nz * 0.73)
+                Dim spec As Double = Math.Pow(Math.Max(0.0, nx * -0.21 + ny * 0.28 - nz * 0.936), 28.0) * actor.Metallic
+                Dim light As Double = 0.24 + 0.71 * diffuse
+                Dim material As Color = triangle.Tint
+                If material Is Nil Then material = actor.Tint
+                If actor.MaterialOverride IsNot Nil Then material = actor.MaterialOverride.BaseColor
+                CheckColor3D(material)
+                Dim face As New Face3D()
+                face.Points = ClipPlane3D([a, b, c], 0.0, 0.0, 1.0, -camera.NearPlane)
+                face.Points = ClipPlane3D(face.Points, 1.0, 0.0, halfWidth, 0.0)
+                face.Points = ClipPlane3D(face.Points, -1.0, 0.0, halfWidth, 0.0)
+                face.Points = ClipPlane3D(face.Points, 0.0, 1.0, halfHeight, 0.0)
+                face.Points = ClipPlane3D(face.Points, 0.0, -1.0, halfHeight, 0.0)
+                If Array.Count(face.Points) < 3 Then Continue For
+                face.Depth = (a.Z + b.Z + c.Z) / 3.0
+                face.Tint = Color.RGBA(Math.Min(1.0, material.R * light + spec), Math.Min(1.0, material.G * light + spec), Math.Min(1.0, material.B * light + spec), material.A)
+                Array.Append(faces, face)
+            Next
+        Next
+        Array.Sort(faces, AddressOf CompareFace3D)
+        mDrawn = 0
+        g.Save()
+        Try
+            g.ClipToRect(0.0, 0.0, width, height)
+            For Each face As Face3D In faces
+                g.BeginPath()
+                Dim first As Boolean = True
+                For Each point As Vec3D In face.Points
+                    Dim px As Double = width * 0.5 + point.X * focal / point.Z
+                    Dim py As Double = height * 0.5 - point.Y * focal / point.Z
+                    If first Then
+                        g.MoveTo(px, py)
+                        first = False
+                    Else
+                        g.LineTo(px, py)
+                    End If
+                Next
+                g.ClosePath()
+                g.FillPath(face.Tint)
+                mDrawn += 1
+            Next
+        Finally
+            g.Restore()
+        End Try
+    End Sub
+End Class
+
+Private Sub CheckResolution3D(segments As Integer, rings As Integer)
+    If segments < 8 Or segments > 64 Or rings < 4 Or rings > 64 Then Throw New InvalidArgumentException("Mesh resolution: segments 8..64, rings 4..64")
+End Sub
+
+Private Function BalloonPoint3D(shape As Integer, theta As Double, phi As Double) As Vec3D
+    Dim radius As Double = Math.Sin(phi)
+    Dim x As Double = radius * Math.Cos(theta)
+    Dim y As Double = Math.Cos(phi)
+    Dim z As Double = radius * Math.Sin(theta)
+    If shape = 1 Then
+        ' A softly lobed heart envelope, pinched at its bottom and top center.
+        Dim section As Double = 0.7 + 0.3 * (y + 1.0) * 0.5
+        x *= section
+        y = y * 0.95 - 0.32 * Math.Exp(-x * x * 18.0) * Math.Max(0.0, y)
+        z *= 0.55
+    ElseIf shape = 2 Then
+        Dim angle As Double = Math.Atan2(y, x)
+        Dim outline As Double = 0.76 + 0.24 * Math.Cos(5.0 * (angle - 1.570796326794897))
+        x *= outline
+        y *= outline
+        z *= 0.38
+    Else
+        x *= 0.86
+        y *= 1.1
+        z *= 0.7
+    End If
+    Return New Vec3D(x, y, z)
+End Function
+
+Public Function BalloonMesh3D(shape As Integer = 0, segments As Integer = 32, rings As Integer = 20) As Mesh3D
+    CheckResolution3D(segments, rings)
+    If shape < 0 Or shape > 2 Then Throw New InvalidArgumentException("Balloon shape must be round(0), heart(1), star(2)")
+    Dim mesh As New Mesh3D()
+    For ring As Integer = 0 To rings - 1
+        Dim phiA As Double = ring * 3.141592653589793 / rings
+        Dim phiB As Double = (ring + 1) * 3.141592653589793 / rings
+        For segment As Integer = 0 To segments - 1
+            Dim thetaA As Double = segment * 6.283185307179586 / segments
+            Dim thetaB As Double = (segment + 1) * 6.283185307179586 / segments
+            Dim a As Vec3D = BalloonPoint3D(shape, thetaA, phiA)
+            Dim b As Vec3D = BalloonPoint3D(shape, thetaB, phiA)
+            Dim c As Vec3D = BalloonPoint3D(shape, thetaB, phiB)
+            Dim d As Vec3D = BalloonPoint3D(shape, thetaA, phiB)
+            mesh.AddTriangle(a, b, c)
+            mesh.AddTriangle(a, c, d)
+        Next
+    Next
+    Return mesh
+End Function
+
+Public Function SphereMesh3D(segments As Integer = 24, rings As Integer = 16) As Mesh3D
+    CheckResolution3D(segments, rings)
+    Dim mesh As New Mesh3D()
+    For ring As Integer = 0 To rings - 1
+        Dim phiA As Double = ring * 3.141592653589793 / rings
+        Dim phiB As Double = (ring + 1) * 3.141592653589793 / rings
+        For segment As Integer = 0 To segments - 1
+            Dim ta As Double = segment * 6.283185307179586 / segments
+            Dim tb As Double = (segment + 1) * 6.283185307179586 / segments
+            Dim a As New Vec3D(Math.Sin(phiA) * Math.Cos(ta), Math.Cos(phiA), Math.Sin(phiA) * Math.Sin(ta))
+            Dim b As New Vec3D(Math.Sin(phiA) * Math.Cos(tb), Math.Cos(phiA), Math.Sin(phiA) * Math.Sin(tb))
+            Dim c As New Vec3D(Math.Sin(phiB) * Math.Cos(tb), Math.Cos(phiB), Math.Sin(phiB) * Math.Sin(tb))
+            Dim d As New Vec3D(Math.Sin(phiB) * Math.Cos(ta), Math.Cos(phiB), Math.Sin(phiB) * Math.Sin(ta))
+            mesh.AddTriangle(a, b, c)
+            mesh.AddTriangle(a, c, d)
+        Next
+    Next
+    Return mesh
+End Function
+
+Public Function CylinderMesh3D(segments As Integer = 24) As Mesh3D
+    CheckResolution3D(segments, 4)
+    Dim mesh As New Mesh3D()
+    For i As Integer = 0 To segments - 1
+        Dim ta As Double = i * 6.283185307179586 / segments
+        Dim tb As Double = (i + 1) * 6.283185307179586 / segments
+        Dim a As New Vec3D(Math.Cos(ta), -1.0, Math.Sin(ta))
+        Dim b As New Vec3D(Math.Cos(tb), -1.0, Math.Sin(tb))
+        Dim c As New Vec3D(Math.Cos(tb), 1.0, Math.Sin(tb))
+        Dim d As New Vec3D(Math.Cos(ta), 1.0, Math.Sin(ta))
+        mesh.AddTriangle(a, c, b)
+        mesh.AddTriangle(a, d, c)
+        mesh.AddTriangle(New Vec3D(0.0, -1.0, 0.0), a, b)
+        mesh.AddTriangle(New Vec3D(0.0, 1.0, 0.0), c, d)
+    Next
+    Return mesh
+End Function

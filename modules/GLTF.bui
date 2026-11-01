@@ -1,0 +1,608 @@
+Import scene3dkit.Scene3DKit
+Import scene3dkit.GLTFImages
+
+Private Sub GLBRequire(accepted As Boolean, message As String)
+    If Not accepted Then Throw New InvalidArgumentException("GLB: " + message)
+End Sub
+
+Private Function GLBInteger(item As JSONItem) As Integer
+    GLBRequire(item IsNot Nil, "integer required")
+    GLBRequire(Not item.IsNull(), "integer required")
+    GLBRequire(item.IsNumber(), "integer required")
+    Dim number As Double = item.AsNumber().Value
+    GLBRequire(number >= 0.0 And number <= 67108864.0 And number = Math.Floor(number), "invalid integer")
+    Return Math.Floor(number)
+End Function
+
+Private Function GLBField(item As JSONItem, key As String, fallback As Integer = 0) As Integer
+    If Not item.HasKey(key) Then Return fallback
+    Return GLBInteger(item.Value(key))
+End Function
+
+Private Function GLBNumber(item As JSONItem) As Double
+    GLBRequire(item.IsNumber(), "number required")
+    Dim number As Double = item.AsNumber().Value
+    GLBRequire(number >= -1000000.0 And number <= 1000000.0, "nonfinite or excessive coordinate")
+    Return number
+End Function
+
+Private Function GLBIdentity() As Array Of Double
+    Return [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+End Function
+
+Private Function GLBMultiply(a As Array Of Double, b As Array Of Double) As Array Of Double
+    Dim output As Array Of Double = GLBIdentity()
+    For col As Integer = 0 To 3
+        For row As Integer = 0 To 3
+            Dim total As Double = 0.0
+            For k As Integer = 0 To 3
+                total += a(k * 4 + row) * b(col * 4 + k)
+            Next
+            output(col * 4 + row) = total
+        Next
+    Next
+    Return output
+End Function
+
+Private Function GLBVector(item As JSONItem, count As Integer) As Array Of Double
+    GLBRequire(item.IsArray() And item.Count() = count, "wrong transform vector length")
+    Dim output As Array Of Double
+    For i As Integer = 0 To count - 1
+        Array.Append(output, GLBNumber(item.ValueAt(i)))
+    Next
+    Return output
+End Function
+
+Private Function GLBTransform(node As JSONItem) As Array Of Double
+    If node.HasKey("matrix") Then
+        GLBRequire(Not node.HasKey("translation") And Not node.HasKey("rotation") And Not node.HasKey("scale"), "matrix and TRS are mutually exclusive")
+        Dim matrix As Array Of Double = GLBVector(node.Value("matrix"), 16)
+        GLBRequire(matrix(3) = 0.0 And matrix(7) = 0.0 And matrix(11) = 0.0 And matrix(15) = 1.0, "affine matrix required")
+        Return matrix
+    End If
+    Dim scale As Array Of Double = [1.0, 1.0, 1.0]
+    Dim translate As Array Of Double = [0.0, 0.0, 0.0]
+    Dim q As Array Of Double = [0.0, 0.0, 0.0, 1.0]
+    If node.HasKey("scale") Then scale = GLBVector(node.Value("scale"), 3)
+    If node.HasKey("translation") Then translate = GLBVector(node.Value("translation"), 3)
+    If node.HasKey("rotation") Then q = GLBVector(node.Value("rotation"), 4)
+    Dim x As Double = q(0)
+    Dim y As Double = q(1)
+    Dim z As Double = q(2)
+    Dim w As Double = q(3)
+    GLBRequire(Math.Abs(x*x+y*y+z*z+w*w-1.0) < 0.001, "rotation quaternion must be normalized")
+    Return [(1.0-2.0*(y*y+z*z))*scale(0), 2.0*(x*y+z*w)*scale(0), 2.0*(x*z-y*w)*scale(0), 0.0, _
+        2.0*(x*y-z*w)*scale(1), (1.0-2.0*(x*x+z*z))*scale(1), 2.0*(y*z+x*w)*scale(1), 0.0, _
+        2.0*(x*z+y*w)*scale(2), 2.0*(y*z-x*w)*scale(2), (1.0-2.0*(x*x+y*y))*scale(2), 0.0, _
+        translate(0), translate(1), translate(2), 1.0]
+End Function
+
+Private Class GLBAccessor
+    Public Property Offset As Integer
+    Public Property Stride As Integer
+    Public Property Count As Integer
+    Public Property Component As Integer
+    Public Property Normalized As Boolean
+End Class
+
+Private Class GLBReader
+    Private Property mData As Bytes
+    Private Property mRoot As JSONItem
+    Private Property mBinary As Integer
+    Private Property mBinaryLength As Integer
+    Private Property mStride As Integer
+    Private Property mTriangle As Integer
+    Private Property mVisited As Integer
+    Private Property mDecodedVertices As Integer
+    Private Property mActive As Array Of Integer
+    Private Property mSeen As Array Of Integer
+    Private Property mImageKeys As Array Of Integer
+    Private Property mImages As Array Of Picture
+    Private Property mImageBytes As Array Of Bytes
+    Private Property mImageMimes As Array Of String
+    Private Property mImagePixels As Integer
+    Private Property mTextureKeys As Array Of Integer
+    Private Property mTextures As Array Of Texture3D
+    Private Property mMaterialKeys As Array Of Integer
+    Private Property mMaterials As Array Of Material3D
+    Public Property Mesh As Mesh3D
+
+    Private Function Unsigned(offset As Integer, width As Integer) As Integer
+        GLBRequire(offset >= 0 And width <= mData.Count - offset, "truncated integer")
+        Dim decoded As Integer = 0
+        For i As Integer = width - 1 To 0 Step -1
+            decoded = decoded * 256 + mData.Item(offset + i)
+        Next
+        Return decoded
+    End Function
+
+    Private Function Float32(offset As Integer) As Double
+        Dim bits As Integer = Me.Unsigned(offset, 4)
+        Dim negative As Boolean = bits >= 2147483648
+        If negative Then bits -= 2147483648
+        Dim exponent As Integer = bits \ 8388608
+        Dim fraction As Integer = bits Mod 8388608
+        GLBRequire(exponent <> 255, "nonfinite float")
+        Dim value As Double
+        If exponent = 0 Then
+            value = (1.0 * fraction) * Math.Pow(2.0, -149.0)
+        Else
+            value = (1.0 + fraction / 8388608.0) * Math.Pow(2.0, 1.0 * (exponent - 127))
+        End If
+        If negative Then value = -value
+        Return value
+    End Function
+
+    Private Function Element(items As JSONItem, index As Integer) As JSONItem
+        GLBRequire(items.IsArray() And index >= 0 And index < items.Count(), "array index outside document")
+        Return items.ValueAt(index)
+    End Function
+
+    Private Function Accessor(index As Integer, semantic As String) As GLBAccessor
+        Dim a As JSONItem = Me.Element(mRoot.Value("accessors"), index)
+        GLBRequire(a.IsObject() And Not a.HasKey("sparse"), "sparse accessors unsupported")
+        Dim normalized As Boolean = False
+        If a.HasKey("normalized") Then
+            GLBRequire(a.Value("normalized").IsBoolean(), "normalized must be boolean")
+            normalized = a.Value("normalized").AsBoolean().Value
+        End If
+        Dim component As Integer = GLBField(a, "componentType", -1)
+        Dim width As Integer
+        Dim alignment As Integer
+        Dim kind As String = a.Value("type").AsString().Or("")
+        If semantic = "POSITION" Or semantic = "NORMAL" Then
+            GLBRequire(component = 5126 And String.Compare(kind, "VEC3", True) = 0 And Not normalized, semantic + " must be unnormalized float32 VEC3")
+            width = 12
+            alignment = 4
+        ElseIf semantic = "TEXCOORD" Then
+            GLBRequire(String.Compare(kind, "VEC2", True) = 0, "texture coordinate accessor must be VEC2")
+            If component = 5126 Then
+                GLBRequire(Not normalized, "float texture coordinates must not be normalized")
+                alignment = 4
+            Else
+                GLBRequire((component = 5121 Or component = 5123) And normalized, "integer texture coordinates must be normalized u8/u16")
+                alignment = 1
+                If component = 5123 Then alignment = 2
+            End If
+            width = alignment * 2
+        Else
+            GLBRequire(String.Compare(kind, "SCALAR", True) = 0 And (component = 5121 Or component = 5123 Or component = 5125) And Not normalized, "indices must be unnormalized unsigned SCALAR")
+            width = 1
+            If component = 5123 Then width = 2
+            If component = 5125 Then width = 4
+            alignment = width
+        End If
+        Dim view As JSONItem = Me.Element(mRoot.Value("bufferViews"), GLBField(a, "bufferView", -1))
+        GLBRequire(GLBField(view, "buffer", -1) = 0, "only embedded buffer 0 supported")
+        Dim offset As Integer = GLBField(view, "byteOffset")
+        Dim length As Integer = GLBField(view, "byteLength", -1)
+        GLBRequire(offset >= 0 And length >= 0 And offset <= mBinaryLength And length <= mBinaryLength - offset, "buffer view outside BIN chunk")
+        Dim stride As Integer = GLBField(view, "byteStride", width)
+        GLBRequire(stride >= width And stride <= 252, "invalid accessor stride")
+        If semantic <> "INDICES" Then
+            GLBRequire(stride Mod 4 = 0, "vertex stride must be a multiple of four")
+        Else
+            GLBRequire(Not view.HasKey("byteStride"), "index buffer views must not specify byteStride")
+        End If
+        Dim start As Integer = GLBField(a, "byteOffset")
+        Dim count As Integer = GLBField(a, "count", -1)
+        GLBRequire(count > 0 And count <= 393216 And start >= 0 And start <= length, "accessor limit exceeded")
+        GLBRequire(start Mod alignment = 0 And (offset + start) Mod alignment = 0, "misaligned accessor")
+        If semantic <> "INDICES" Then GLBRequire(start Mod 4 = 0, "vertex attribute offset must be a multiple of four")
+        GLBRequire(width <= length - start And count - 1 <= (length - start - width) \ stride, "accessor exceeds buffer view")
+        Dim output As New GLBAccessor()
+        output.Offset = mBinary + offset + start
+        output.Count = count
+        output.Stride = stride
+        output.Component = component
+        output.Normalized = normalized
+        Return output
+    End Function
+
+    Private Function IndexValue(a As GLBAccessor, index As Integer) As Integer
+        Dim width As Integer = 1
+        If a.Component = 5123 Then width = 2
+        If a.Component = 5125 Then width = 4
+        Return Me.Unsigned(a.Offset + index * a.Stride, width)
+    End Function
+
+    Private Function Scalar(item As JSONItem, key As String, fallback As Double, lower As Double = 0.0, upper As Double = 1.0) As Double
+        If Not item.HasKey(key) Then Return fallback
+        Dim number As Double = GLBNumber(item.Value(key))
+        GLBRequire(number >= lower And number <= upper, "material scalar outside permitted range: " + key)
+        Return number
+    End Function
+
+    Private Function Tint(item As JSONItem, key As String, alpha As Boolean) As Color
+        Dim count As Integer = 3
+        If alpha Then count = 4
+        Dim channels As Array Of Double = GLBVector(item.Value(key), count)
+        For Each channel As Double In channels
+            GLBRequire(channel >= 0.0 And channel <= 1.0, "material color channel outside 0..1")
+        Next
+        If alpha Then Return Color.RGBA(channels(0), channels(1), channels(2), channels(3))
+        Return Color.RGBA(channels(0), channels(1), channels(2), 1.0)
+    End Function
+
+    Private Function ImageSlot(index As Integer) As Integer
+        For i As Integer = 0 To Array.Count(mImageKeys) - 1
+            If mImageKeys(i) = index Then Return i
+        Next
+        GLBRequire(Array.Count(mImageKeys) < 64, "image count budget exceeded")
+        Dim image As JSONItem = Me.Element(mRoot.Value("images"), index)
+        GLBRequire(image.IsObject() And Not image.HasKey("uri"), "only embedded bufferView images supported")
+        Dim mime As String = image.Value("mimeType").AsString().Or("")
+        GLBRequire(String.Compare(mime, "image/png", True) = 0 Or String.Compare(mime, "image/jpeg", True) = 0, "only PNG/JPEG images supported")
+        Dim view As JSONItem = Me.Element(mRoot.Value("bufferViews"), GLBField(image, "bufferView", -1))
+        GLBRequire(GLBField(view, "buffer", -1) = 0 And Not view.HasKey("byteStride"), "image must use embedded unstrided buffer 0")
+        Dim offset As Integer = GLBField(view, "byteOffset")
+        Dim length As Integer = GLBField(view, "byteLength", -1)
+        GLBRequire(offset >= 0 And length > 0 And length <= 16777216 And offset <= mBinaryLength And length <= mBinaryLength - offset, "image buffer view outside bounds/budget")
+        Dim encoded As New Bytes(length)
+        encoded.Append(CType(CType(mData.DataPtr(), Integer) + mBinary + offset, Ptr), length)
+        Dim picture As Picture = DecodeGLTFImage(encoded, mime, 16777216 - mImagePixels)
+        GLBRequire(picture IsNot Nil, "image decoder rejected image")
+        mImagePixels += picture.Width * picture.Height
+        Array.Append(mImageKeys, index)
+        Array.Append(mImages, picture)
+        Array.Append(mImageBytes, encoded)
+        Array.Append(mImageMimes, mime)
+        Return Array.Count(mImages) - 1
+    End Function
+
+    Private Function Texture(info As JSONItem) As Texture3D
+        GLBRequire(info.IsObject(), "texture info object required")
+        Dim index As Integer = GLBField(info, "index", -1)
+        For i As Integer = 0 To Array.Count(mTextureKeys) - 1
+            If mTextureKeys(i) = index Then Return mTextures(i)
+        Next
+        GLBRequire(Array.Count(mTextures) < 256, "texture count budget exceeded")
+        Dim source As JSONItem = Me.Element(mRoot.Value("textures"), index)
+        Dim slot As Integer = Me.ImageSlot(GLBField(source, "source", -1))
+        Dim texture As New Texture3D(mImages(slot))
+        texture.Encoded = mImageBytes(slot)
+        texture.MimeType = mImageMimes(slot)
+        If source.HasKey("sampler") Then
+            Dim sampler As JSONItem = Me.Element(mRoot.Value("samplers"), GLBField(source, "sampler", -1))
+            GLBRequire(sampler.IsObject(), "sampler object required")
+            texture.WrapS = GLBField(sampler, "wrapS", 10497)
+            texture.WrapT = GLBField(sampler, "wrapT", 10497)
+            texture.MinFilter = GLBField(sampler, "minFilter", 9987)
+            texture.MagFilter = GLBField(sampler, "magFilter", 9729)
+        End If
+        GLBRequire((texture.WrapS = 33071 Or texture.WrapS = 33648 Or texture.WrapS = 10497) And (texture.WrapT = 33071 Or texture.WrapT = 33648 Or texture.WrapT = 10497), "invalid sampler wrap mode")
+        GLBRequire(texture.MagFilter = 9728 Or texture.MagFilter = 9729, "invalid sampler magnification filter")
+        GLBRequire(texture.MinFilter = 9728 Or texture.MinFilter = 9729 Or (texture.MinFilter >= 9984 And texture.MinFilter <= 9987), "invalid sampler minification filter")
+        Array.Append(mTextureKeys, index)
+        Array.Append(mTextures, texture)
+        Return texture
+    End Function
+
+    Private Function TexCoord(info As JSONItem) As Integer
+        GLBRequire(info.IsObject(), "texture info object required")
+        Dim uv As Integer = GLBField(info, "texCoord")
+        GLBRequire(uv = 0 Or uv = 1, "only texture coordinate sets 0 and 1 supported")
+        If info.HasKey("extensions") Then
+            Dim extensions As JSONItem = info.Value("extensions")
+            GLBRequire(extensions.IsObject() And Not extensions.HasKey("KHR_texture_transform"), "texture transforms unsupported")
+        End If
+        Return uv
+    End Function
+
+    Private Function Material(primitive As JSONItem) As Material3D
+        Dim index As Integer = GLBField(primitive, "material", -1)
+        For i As Integer = 0 To Array.Count(mMaterialKeys) - 1
+            If mMaterialKeys(i) = index Then Return mMaterials(i)
+        Next
+        GLBRequire(Array.Count(mMaterials) < 256, "material count budget exceeded")
+        Dim output As New Material3D()
+        If index >= 0 Then
+            Dim material As JSONItem = Me.Element(mRoot.Value("materials"), index)
+            GLBRequire(material.IsObject(), "material object required")
+            If material.HasKey("pbrMetallicRoughness") Then
+                Dim pbr As JSONItem = material.Value("pbrMetallicRoughness")
+                GLBRequire(pbr.IsObject(), "PBR object required")
+                If pbr.HasKey("baseColorFactor") Then output.BaseColor = Me.Tint(pbr, "baseColorFactor", True)
+                output.Metallic = Me.Scalar(pbr, "metallicFactor", 1.0)
+                output.Roughness = Me.Scalar(pbr, "roughnessFactor", 1.0)
+                If pbr.HasKey("baseColorTexture") Then
+                    output.BaseColorTexCoord = Me.TexCoord(pbr.Value("baseColorTexture"))
+                    output.BaseColorTexture = Me.Texture(pbr.Value("baseColorTexture"))
+                End If
+                If pbr.HasKey("metallicRoughnessTexture") Then
+                    output.MetallicRoughnessTexCoord = Me.TexCoord(pbr.Value("metallicRoughnessTexture"))
+                    output.MetallicRoughnessTexture = Me.Texture(pbr.Value("metallicRoughnessTexture"))
+                End If
+            End If
+            If material.HasKey("emissiveFactor") Then output.Emissive = Me.Tint(material, "emissiveFactor", False)
+            If material.HasKey("alphaMode") Then output.AlphaMode = material.Value("alphaMode").AsString().Or("")
+            GLBRequire(String.Compare(output.AlphaMode, "OPAQUE", True) = 0 Or String.Compare(output.AlphaMode, "MASK", True) = 0 Or String.Compare(output.AlphaMode, "BLEND", True) = 0, "invalid glTF alpha mode")
+            output.AlphaCutoff = Me.Scalar(material, "alphaCutoff", 0.5, 0.0, 1000000.0)
+            If material.HasKey("doubleSided") Then
+                GLBRequire(material.Value("doubleSided").IsBoolean(), "doubleSided must be boolean")
+                output.DoubleSided = material.Value("doubleSided").AsBoolean().Value
+            End If
+            If material.HasKey("normalTexture") Then
+                Dim normal As JSONItem = material.Value("normalTexture")
+                output.NormalTexCoord = Me.TexCoord(normal)
+                output.NormalTexture = Me.Texture(normal)
+                output.NormalScale = Me.Scalar(normal, "scale", 1.0, -1000000.0, 1000000.0)
+            End If
+            If material.HasKey("occlusionTexture") Then
+                Dim occlusion As JSONItem = material.Value("occlusionTexture")
+                output.OcclusionTexCoord = Me.TexCoord(occlusion)
+                output.OcclusionTexture = Me.Texture(occlusion)
+                output.OcclusionStrength = Me.Scalar(occlusion, "strength", 1.0)
+            End If
+            If material.HasKey("emissiveTexture") Then
+                output.EmissiveTexCoord = Me.TexCoord(material.Value("emissiveTexture"))
+                output.EmissiveTexture = Me.Texture(material.Value("emissiveTexture"))
+            End If
+        End If
+        output.Validate()
+        Array.Append(mMaterialKeys, index)
+        Array.Append(mMaterials, output)
+        Return output
+    End Function
+
+    Private Function Unit(x As Double, y As Double, z As Double, required As Boolean) As Vec3D
+        Dim maximum As Double = Math.Max(Math.Abs(x), Math.Max(Math.Abs(y), Math.Abs(z)))
+        If maximum = 0.0 Then
+            GLBRequire(Not required, "zero-length vertex normal")
+            Return New Vec3D(0.0, 0.0, 1.0)
+        End If
+        x /= maximum
+        y /= maximum
+        z /= maximum
+        Dim length As Double = Math.Sqrt(x*x + y*y + z*z)
+        Return New Vec3D(x / length, y / length, z / length)
+    End Function
+
+    Private Function UV(a As GLBAccessor, index As Integer) As Vec3D
+        If a Is Nil Then Return New Vec3D(0.0, 0.0, 0.0)
+        Dim offset As Integer = a.Offset + index * a.Stride
+        If a.Component = 5126 Then Return New Vec3D(Me.Float32(offset), Me.Float32(offset + 4), 0.0)
+        If a.Component = 5121 Then Return New Vec3D(Me.Unsigned(offset, 1) / 255.0, Me.Unsigned(offset + 1, 1) / 255.0, 0.0)
+        Return New Vec3D(Me.Unsigned(offset, 2) / 65535.0, Me.Unsigned(offset + 2, 2) / 65535.0, 0.0)
+    End Function
+
+    Private Sub RequireUV(texture As Texture3D, setIndex As Integer, uv0 As GLBAccessor, uv1 As GLBAccessor)
+        If texture Is Nil Then Exit Sub
+        If setIndex = 0 Then GLBRequire(uv0 IsNot Nil, "texture requires TEXCOORD_0")
+        If setIndex = 1 Then GLBRequire(uv1 IsNot Nil, "texture requires TEXCOORD_1")
+    End Sub
+
+    Private Sub ReadMesh(index As Integer, transform As Array Of Double)
+        Dim source As JSONItem = Me.Element(mRoot.Value("meshes"), index)
+        GLBRequire(Not source.HasKey("weights"), "morph weights unsupported")
+        Dim primitives As JSONItem = source.Value("primitives")
+        GLBRequire(primitives.IsArray() And primitives.Count() <= 256, "primitive budget exceeded")
+        Dim m0 As Double = transform(5)*transform(10)-transform(6)*transform(9)
+        Dim m1 As Double = transform(6)*transform(8)-transform(4)*transform(10)
+        Dim m2 As Double = transform(4)*transform(9)-transform(5)*transform(8)
+        Dim m3 As Double = transform(9)*transform(2)-transform(10)*transform(1)
+        Dim m4 As Double = transform(10)*transform(0)-transform(8)*transform(2)
+        Dim m5 As Double = transform(8)*transform(1)-transform(9)*transform(0)
+        Dim m6 As Double = transform(1)*transform(6)-transform(2)*transform(5)
+        Dim m7 As Double = transform(2)*transform(4)-transform(0)*transform(6)
+        Dim m8 As Double = transform(0)*transform(5)-transform(1)*transform(4)
+        Dim determinant As Double = transform(0)*m0+transform(1)*m1+transform(2)*m2
+        Dim sign As Double = 1.0
+        If determinant < 0.0 Then sign = -1.0
+        For p As Integer = 0 To primitives.Count() - 1
+            Dim primitive As JSONItem = primitives.ValueAt(p)
+            GLBRequire(GLBField(primitive, "mode", 4) = 4, "only triangle mode supported")
+            GLBRequire(Not primitive.HasKey("targets") And Not primitive.HasKey("extensions"), "morph/compressed primitives unsupported")
+            Dim attributes As JSONItem = primitive.Value("attributes")
+            Dim positions As GLBAccessor = Me.Accessor(GLBField(attributes, "POSITION", -1), "POSITION")
+            GLBRequire(positions.Count <= 1048576 - mDecodedVertices, "decoded vertex budget exceeded")
+            mDecodedVertices += positions.Count
+            Dim normalAccessor As GLBAccessor
+            Dim uv0 As GLBAccessor
+            Dim uv1 As GLBAccessor
+            If attributes.HasKey("NORMAL") Then
+                normalAccessor = Me.Accessor(GLBField(attributes, "NORMAL", -1), "NORMAL")
+                GLBRequire(normalAccessor.Count = positions.Count And determinant <> 0.0, "NORMAL count mismatch or singular transform")
+            End If
+            If attributes.HasKey("TEXCOORD_0") Then
+                uv0 = Me.Accessor(GLBField(attributes, "TEXCOORD_0", -1), "TEXCOORD")
+                GLBRequire(uv0.Count = positions.Count, "TEXCOORD_0 count mismatch")
+            End If
+            If attributes.HasKey("TEXCOORD_1") Then
+                uv1 = Me.Accessor(GLBField(attributes, "TEXCOORD_1", -1), "TEXCOORD")
+                GLBRequire(uv1.Count = positions.Count, "TEXCOORD_1 count mismatch")
+            End If
+            Dim material As Material3D = Me.Material(primitive)
+            Me.RequireUV(material.BaseColorTexture, material.BaseColorTexCoord, uv0, uv1)
+            Me.RequireUV(material.MetallicRoughnessTexture, material.MetallicRoughnessTexCoord, uv0, uv1)
+            Me.RequireUV(material.NormalTexture, material.NormalTexCoord, uv0, uv1)
+            Me.RequireUV(material.OcclusionTexture, material.OcclusionTexCoord, uv0, uv1)
+            Me.RequireUV(material.EmissiveTexture, material.EmissiveTexCoord, uv0, uv1)
+            Dim vertices As Array Of Vec3D
+            Dim normals As Array Of Vec3D
+            Dim coords0 As Array Of Vec3D
+            Dim coords1 As Array Of Vec3D
+            Dim zeroUV As New Vec3D(0.0, 0.0, 0.0)
+            For v As Integer = 0 To positions.Count - 1
+                Dim offset As Integer = positions.Offset + v * positions.Stride
+                Dim x As Double = Me.Float32(offset)
+                Dim y As Double = Me.Float32(offset + 4)
+                Dim z As Double = Me.Float32(offset + 8)
+                Array.Append(vertices, New Vec3D(transform(0)*x+transform(4)*y+transform(8)*z+transform(12), _
+                    transform(1)*x+transform(5)*y+transform(9)*z+transform(13), transform(2)*x+transform(6)*y+transform(10)*z+transform(14)))
+                If normalAccessor IsNot Nil Then
+                    Dim at As Integer = normalAccessor.Offset + v * normalAccessor.Stride
+                    x = Me.Float32(at)
+                    y = Me.Float32(at + 4)
+                    z = Me.Float32(at + 8)
+                    Array.Append(normals, Me.Unit(sign*(m0*x+m3*y+m6*z), sign*(m1*x+m4*y+m7*z), sign*(m2*x+m5*y+m8*z), True))
+                End If
+                If uv0 Is Nil Then
+                    Array.Append(coords0, zeroUV)
+                Else
+                    Array.Append(coords0, Me.UV(uv0, v))
+                End If
+                If uv1 Is Nil Then
+                    Array.Append(coords1, zeroUV)
+                Else
+                    Array.Append(coords1, Me.UV(uv1, v))
+                End If
+            Next
+            Dim indices As GLBAccessor
+            Dim count As Integer = positions.Count
+            If primitive.HasKey("indices") Then
+                indices = Me.Accessor(GLBField(primitive, "indices", -1), "INDICES")
+                count = indices.Count
+            End If
+            GLBRequire(count Mod 3 = 0, "triangle index count must be multiple of three")
+            For t As Integer = 0 To count - 1 Step 3
+                Dim a As Integer = t
+                Dim b As Integer = t + 1
+                Dim c As Integer = t + 2
+                If indices IsNot Nil Then
+                    a = Me.IndexValue(indices, t)
+                    b = Me.IndexValue(indices, t + 1)
+                    c = Me.IndexValue(indices, t + 2)
+                End If
+                GLBRequire(a < positions.Count And b < positions.Count And c < positions.Count, "vertex index outside POSITION accessor")
+                If determinant < 0.0 Then
+                    Dim swap As Integer = b
+                    b = c
+                    c = swap
+                End If
+                If mTriangle Mod mStride = 0 Then
+                    Dim na As Vec3D
+                    Dim nb As Vec3D
+                    Dim nc As Vec3D
+                    If normalAccessor Is Nil Then
+                        Dim abx As Double = vertices(b).X-vertices(a).X
+                        Dim aby As Double = vertices(b).Y-vertices(a).Y
+                        Dim abz As Double = vertices(b).Z-vertices(a).Z
+                        Dim acx As Double = vertices(c).X-vertices(a).X
+                        Dim acy As Double = vertices(c).Y-vertices(a).Y
+                        Dim acz As Double = vertices(c).Z-vertices(a).Z
+                        na = Me.Unit(aby*acz-abz*acy, abz*acx-abx*acz, abx*acy-aby*acx, False)
+                        nb = na
+                        nc = na
+                    Else
+                        na = normals(a)
+                        nb = normals(b)
+                        nc = normals(c)
+                    End If
+                    Mesh.AddSurfaceTriangle(vertices(a), vertices(b), vertices(c), na, nb, nc, coords0(a), coords0(b), coords0(c), coords1(a), coords1(b), coords1(c), material)
+                End If
+                mTriangle += 1
+                GLBRequire(mTriangle <= 1048576, "source triangle budget exceeded")
+            Next
+        Next
+    End Sub
+
+    Private Sub Visit(index As Integer, parent As Array Of Double, depth As Integer)
+        GLBRequire(depth <= 64 And mVisited < 4096, "node depth/visit budget exceeded")
+        For Each active As Integer In mActive
+            GLBRequire(active <> index, "cyclic node graph")
+        Next
+        For Each seen As Integer In mSeen
+            GLBRequire(seen <> index, "node must have a unique place in the scene tree")
+        Next
+        Array.Append(mSeen, index)
+        mVisited += 1
+        Array.Append(mActive, index)
+        Dim node As JSONItem = Me.Element(mRoot.Value("nodes"), index)
+        GLBRequire(Not node.HasKey("skin") And Not node.HasKey("weights"), "skinning/morphs unsupported")
+        Dim transform As Array Of Double = GLBMultiply(parent, GLBTransform(node))
+        If node.HasKey("mesh") Then Me.ReadMesh(GLBField(node, "mesh", -1), transform)
+        If node.HasKey("children") Then
+            Dim children As JSONItem = node.Value("children")
+            GLBRequire(children.IsArray() And children.Count() <= 4096, "invalid children")
+            For child As Integer = 0 To children.Count() - 1
+                Me.Visit(GLBInteger(children.ValueAt(child)), transform, depth + 1)
+            Next
+        End If
+        Array.RemoveAt(mActive, Array.Count(mActive) - 1)
+    End Sub
+
+    Public Sub Constructor(data As Bytes, triangleStride As Integer)
+        GLBRequire(data IsNot Nil, "data required")
+        GLBRequire(data.Count >= 28 And data.Count <= 67108864, "file size outside 28..64MiB")
+        GLBRequire(triangleStride >= 1 And triangleStride <= 65536, "triangle stride outside 1..65536")
+        mData = data
+        mStride = triangleStride
+        Mesh = New Mesh3D()
+        GLBRequire(Me.Unsigned(0,4) = 1179937895 And Me.Unsigned(4,4) = 2, "expected GLB version 2")
+        GLBRequire(Me.Unsigned(8,4) = data.Count, "declared length differs from input")
+        Dim jsonLength As Integer = Me.Unsigned(12,4)
+        GLBRequire(Me.Unsigned(16,4) = 1313821514 And jsonLength <= 1048576 And jsonLength Mod 4 = 0 And jsonLength <= data.Count - 28, "invalid JSON chunk")
+        Dim jsonBytes As New Bytes(jsonLength)
+        jsonBytes.Append(CType(CType(data.DataPtr(), Integer) + 20, Ptr), jsonLength)
+        Dim jsonText As String = jsonBytes.ToString(Text.Encodings.UTF8)
+        Dim depth As Integer = 0
+        Dim quoted As Boolean = False
+        Dim escaped As Boolean = False
+        For Each ch As String In String.Chars(jsonText)
+            If quoted Then
+                If escaped Then
+                    escaped = False
+                ElseIf ch = "\\" Then
+                    escaped = True
+                ElseIf ch = "\"" Then
+                    quoted = False
+                End If
+            ElseIf ch = "\"" Then
+                quoted = True
+            ElseIf ch = "[" Or ch = "{" Then
+                depth += 1
+                GLBRequire(depth <= 64, "JSON nesting too deep")
+            ElseIf ch = "]" Or ch = "}" Then
+                depth -= 1
+            End If
+        Next
+        mRoot = Json.Parse(jsonText)
+        GLBRequire(mRoot.IsObject(), "document object required")
+        GLBRequire(mRoot.Value("asset").Value("version").AsString().Or("") = "2.0", "glTF 2.0 required")
+        If mRoot.HasKey("extensionsRequired") Then GLBRequire(mRoot.Value("extensionsRequired").IsArray() And mRoot.Value("extensionsRequired").Count() = 0, "required extensions unsupported")
+        If mRoot.HasKey("animations") Then GLBRequire(mRoot.Value("animations").IsArray() And mRoot.Value("animations").Count() = 0, "animated scenes unsupported")
+        Dim binaryHeader As Integer = 20 + jsonLength
+        mBinaryLength = Me.Unsigned(binaryHeader, 4)
+        GLBRequire(Me.Unsigned(binaryHeader + 4,4) = 5130562 And mBinaryLength Mod 4 = 0 And mBinaryLength = data.Count - binaryHeader - 8, "expected final BIN chunk")
+        mBinary = binaryHeader + 8
+        Dim buffers As JSONItem = mRoot.Value("buffers")
+        GLBRequire(buffers.IsArray() And buffers.Count() = 1, "one embedded buffer required")
+        Dim buffer As JSONItem = buffers.ValueAt(0)
+        GLBRequire(Not buffer.HasKey("uri"), "external buffers unsupported")
+        Dim declared As Integer = GLBField(buffer, "byteLength", -1)
+        GLBRequire(declared >= 0 And declared <= mBinaryLength And mBinaryLength - declared <= 3, "invalid embedded buffer length")
+        mBinaryLength = declared
+        Dim scene As JSONItem = Me.Element(mRoot.Value("scenes"), GLBField(mRoot, "scene"))
+        Dim roots As JSONItem = scene.Value("nodes")
+        GLBRequire(roots.IsArray() And roots.Count() <= 4096, "invalid scene nodes")
+        For i As Integer = 0 To roots.Count() - 1
+            Me.Visit(GLBInteger(roots.ValueAt(i)), GLBIdentity(), 0)
+        Next
+    End Sub
+End Class
+
+''' Decode a bounded static glTF 2 binary scene. Node transforms are baked.
+''' Stride >1 explicitly samples every Nth source triangle; it is not mesh simplification.
+Public Function DecodeGLB(data As Bytes, triangleStride As Integer = 1) As Mesh3D
+    Dim reader As New GLBReader(data, triangleStride)
+    Return reader.Mesh
+End Function
+
+''' Load an embedded-buffer GLB file. File size is capped before allocation.
+Public Function LoadGLB(filePath As String, triangleStride As Integer = 1) As Mesh3D
+    Dim file As New FileSystemItem(filePath)
+    GLBRequire(file.IsFile(), "regular file required")
+    Dim opened As Result Of BinaryStream, IOError = BinaryStream.Open(file, False)
+    GLBRequire(opened.IsOk, "cannot open model")
+    Dim stream As BinaryStream = opened.Value
+    Dim data As Bytes
+    Try
+        GLBRequire(stream.Length <= 67108864, "file exceeds 64MiB")
+        data = stream.Read(67108865)
+    Finally
+        stream.Close()
+    End Try
+    GLBRequire(data.Count <= 67108864, "file exceeds 64MiB")
+    Return DecodeGLB(data, triangleStride)
+End Function

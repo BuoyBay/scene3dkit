@@ -1,0 +1,482 @@
+Import scene3dkit.Scene3DKit
+
+Private Declare Function SG3Create Lib "buoy_scene3dkit" Alias "sg3_create_ex" (width As Int32, height As Int32, samples As Int32) As Ptr
+Private Declare Function SG3Samples Lib "buoy_scene3dkit" Alias "sg3_samples" (handle As Ptr) As Int32
+Private Declare Function SG3Directional Lib "buoy_scene3dkit" Alias "sg3_set_directional_enabled" (handle As Ptr, enabled As Int32) As Int32
+Private Declare Function SG3Bloom Lib "buoy_scene3dkit" Alias "sg3_set_bloom" (handle As Ptr, strength As Double) As Int32
+Private Declare Function SG3PointLight Lib "buoy_scene3dkit" Alias "sg3_point_light" (handle As Ptr, x As Double, y As Double, z As Double, red As Double, green As Double, blue As Double, intensity As Double, range As Double) As Int32
+Private Declare Function SG3ClearLights Lib "buoy_scene3dkit" Alias "sg3_clear_lights" (handle As Ptr) As Int32
+Private Declare Function SG3PointLightAt Lib "buoy_scene3dkit" Alias "sg3_point_light_at_ex" (handle As Ptr, index As Int32, x As Double, y As Double, z As Double, red As Double, green As Double, blue As Double, intensity As Double, range As Double, castShadows As Int32) As Int32
+Private Declare Function SG3SpotLight Lib "buoy_scene3dkit" Alias "sg3_spot_light_ex" (handle As Ptr, x As Double, y As Double, z As Double, dx As Double, dy As Double, dz As Double, red As Double, green As Double, blue As Double, intensity As Double, range As Double, innerAngle As Double, outerAngle As Double, castShadows As Int32) As Int32
+Private Declare Function SG3Error Lib "buoy_scene3dkit" Alias "sg3_error" (handle As Ptr) As CString
+Private Declare Function SG3Renderer Lib "buoy_scene3dkit" Alias "sg3_renderer" (handle As Ptr) As CString
+Private Declare Function SG3Version Lib "buoy_scene3dkit" Alias "sg3_version" (handle As Ptr) As CString
+Private Declare Function SG3Software Lib "buoy_scene3dkit" Alias "sg3_is_software" (handle As Ptr) As Int32
+Private Declare Function SG3Mesh Lib "buoy_scene3dkit" Alias "sg3_mesh" (handle As Ptr, vertices As Ptr, count As Int32, stride As Int32) As Int32
+Private Declare Function SG3MeshFree Lib "buoy_scene3dkit" Alias "sg3_mesh_free" (handle As Ptr, mesh As Int32) As Int32
+Private Declare Function SG3Texture Lib "buoy_scene3dkit" Alias "sg3_texture_ex" (handle As Ptr, pixels As Ptr, width As Int32, height As Int32, wrapS As Int32, wrapT As Int32, minFilter As Int32, magFilter As Int32) As Int32
+Private Declare Function SG3TextureFree Lib "buoy_scene3dkit" Alias "sg3_texture_free" (handle As Ptr, texture As Int32) As Int32
+Private Declare Function SG3Environment Lib "buoy_scene3dkit" Alias "sg3_environment" (handle As Ptr, diffuse As Ptr, diffuseBytes As Int32, specular As Ptr, specularBytes As Int32) As Int32
+Private Declare Function SG3Begin Lib "buoy_scene3dkit" Alias "sg3_begin" (handle As Ptr, viewProjection As Ptr, eye As Ptr, clear As Ptr, lightViewProjection As Ptr, lightDirection As Ptr, exposure As Double) As Int32
+Private Declare Function SG3Submit Lib "buoy_scene3dkit" Alias "sg3_submit_material_ex" (handle As Ptr, mesh As Int32, model As Ptr, baseColor As Ptr, metallic As Double, roughness As Double, baseTexture As Int32, mrTexture As Int32, normalTexture As Int32, occlusionTexture As Int32, emissiveTexture As Int32, emissive As Ptr, alphaMode As Int32, alphaCutoff As Double, doubleSided As Int32, castShadow As Int32, uvSelectors As Ptr, normalScale As Double, aoStrength As Double, unlit As Int32) As Int32
+Private Declare Function SG3Render Lib "buoy_scene3dkit" Alias "sg3_render" (handle As Ptr) As Int32
+Private Declare Function SG3Pixels Lib "buoy_scene3dkit" Alias "sg3_pixels" (handle As Ptr) As Ptr
+Private Declare Sub SG3Free Lib "buoy_scene3dkit" Alias "sg3_free" (handle As Ptr)
+
+Sequential Structure GPUScalar3D
+    Value As Double
+End Structure
+Sequential Structure GPUIndex3D
+    Value As Int32
+End Structure
+Sequential Structure GPUVertex3D
+    X As Double
+    Y As Double
+    Z As Double
+    NX As Double
+    NY As Double
+    NZ As Double
+    U As Double
+    V As Double
+    U1 As Double
+    V1 As Double
+    R As Double
+    G As Double
+    B As Double
+    A As Double
+End Structure
+
+Private Function GPUPack(values As Array Of Double) As Bytes
+    Dim bytes As New Bytes(Array.Count(values) * 8)
+    For Each item As Double In values
+        Dim scalar As GPUScalar3D = { Value: item }
+        bytes.Append(CType(scalar, Ptr), 8)
+    Next
+    Return bytes
+End Function
+
+Private Function GPUIdentity() As Array Of Double
+    Return [1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0,0.0,0.0,0.0,0.0,1.0]
+End Function
+
+Private Function GPUMultiply(a As Array Of Double, b As Array Of Double) As Array Of Double
+    Dim combined As Array Of Double = GPUIdentity()
+    For col As Integer = 0 To 3
+        For row As Integer = 0 To 3
+            Dim total As Double = 0.0
+            For k As Integer = 0 To 3
+                total += a(k * 4 + row) * b(col * 4 + k)
+            Next
+            combined(col * 4 + row) = total
+        Next
+    Next
+    Return combined
+End Function
+
+Private Function GPUView(camera As Camera3D) As Array Of Double
+    Dim cy As Double = Math.Cos(camera.Yaw)
+    Dim sy As Double = Math.Sin(camera.Yaw)
+    Dim cp As Double = Math.Cos(camera.Pitch)
+    Dim sp As Double = Math.Sin(camera.Pitch)
+    Return [cy,-sp*sy,cp*sy,0.0,0.0,cp,sp,0.0,-sy,-sp*cy,cp*cy,0.0,0.0,-cp*camera.TargetY,-camera.Distance-sp*camera.TargetY,1.0]
+End Function
+
+Private Function GPUModel(actor As MeshActor3D) As Array Of Double
+    Dim c As Double = Math.Cos(actor.RotationY)
+    Dim s As Double = Math.Sin(actor.RotationY)
+    Return [c*actor.ScaleX,0.0,-s*actor.ScaleX,0.0,0.0,actor.ScaleY,0.0,0.0,s*actor.ScaleZ,0.0,c*actor.ScaleZ,0.0,actor.X,actor.Y,actor.Z,1.0]
+End Function
+
+Private Function GPUNormal(face As Triangle3D) As Vec3D
+    Dim ux As Double = face.B.X - face.A.X
+    Dim uy As Double = face.B.Y - face.A.Y
+    Dim uz As Double = face.B.Z - face.A.Z
+    Dim vx As Double = face.C.X - face.A.X
+    Dim vy As Double = face.C.Y - face.A.Y
+    Dim vz As Double = face.C.Z - face.A.Z
+    Dim x As Double = uy*vz-uz*vy
+    Dim y As Double = uz*vx-ux*vz
+    Dim z As Double = ux*vy-uy*vx
+    Dim length As Double = Math.Sqrt(x*x+y*y+z*z)
+    If length < 0.000000001 Then Return New Vec3D(0.0,1.0,0.0)
+    Return New Vec3D(x/length,y/length,z/length)
+End Function
+
+Private Sub GPUAppendVertex(bytes As Bytes, point As Vec3D, normal As Vec3D, uv As Vec3D, uv1 As Vec3D, ink As Color)
+    Dim record As GPUVertex3D
+    record.X = point.X
+    record.Y = point.Y
+    record.Z = point.Z
+    record.NX = normal.X
+    record.NY = normal.Y
+    record.NZ = normal.Z
+    If uv IsNot Nil Then
+        record.U = uv.X
+        record.V = uv.Y
+    End If
+    If uv1 IsNot Nil Then
+        record.U1 = uv1.X
+        record.V1 = uv1.Y
+    End If
+    record.R = ink.R
+    record.G = ink.G
+    record.B = ink.B
+    record.A = ink.A
+    bytes.Append(CType(record, Ptr), 112)
+End Sub
+
+Private Class GPUTextureCache3D
+    Public Property Source As Texture3D
+    Public Property Id As Int32
+End Class
+
+Private Class GPUBatch3D
+    Public Property Material As Material3D
+    Public Property TintInherited As Boolean
+    Public Property Id As Int32 = 0
+    Public Property Vertices As Bytes
+    Public Property Count As Integer
+End Class
+
+Private Class GPUMeshCache3D
+    Public Property Source As Mesh3D
+    Public Property Count As Integer
+    Public Property Batches As Array Of GPUBatch3D
+End Class
+
+' Native offscreen OpenGL/GLES renderer. One owning thread; close explicitly.
+Public Class GPUScene3D
+    Private Property mHandle As Ptr = Nil
+    Private Property mWidth As Integer
+    Private Property mHeight As Integer
+    Private Property mMeshes As Array Of GPUMeshCache3D
+    Private Property mTextures As Array Of GPUTextureCache3D
+    Public Property ClearColor As Color = Color.RGBA(0.0,0.0,0.0,0.0)
+    Public Property Exposure As Double = 1.0
+    Public Property Shadows As Boolean = True
+    Public Property DirectionalLightEnabled As Boolean = True
+    Public Property BloomStrength As Double = 0.0
+    Public Property PointLight As Vec3D
+    Public Property PointColor As Color = Color.White
+    Public Property PointIntensity As Double = 0.0
+    Public Property PointRange As Double = 10.0
+    Public Property PointLights As Array Of PointLight3D = []
+    Public Property SpotLight As SpotLight3D
+    Public Property Samples As Integer
+        Get
+            Me.RequireOpen()
+            Return SG3Samples(mHandle)
+        End Get
+    End Property
+    Public Property Width As Integer
+        Get
+            Return mWidth
+        End Get
+    End Property
+    Public Property Height As Integer
+        Get
+            Return mHeight
+        End Get
+    End Property
+    Public Property Renderer As String
+        Get
+            Me.RequireOpen()
+            Return CType(SG3Renderer(mHandle), String)
+        End Get
+    End Property
+    Public Property Version As String
+        Get
+            Me.RequireOpen()
+            Return CType(SG3Version(mHandle), String)
+        End Get
+    End Property
+    Public Property IsSoftware As Boolean
+        Get
+            Me.RequireOpen()
+            Return SG3Software(mHandle) <> 0
+        End Get
+    End Property
+    Public Property CachedMeshes As Integer
+        Get
+            Return Array.Count(mMeshes)
+        End Get
+    End Property
+    Public Property CachedTextures As Integer
+        Get
+            Return Array.Count(mTextures)
+        End Get
+    End Property
+    Public Sub Constructor(width As Integer, height As Integer, samples As Integer = 4)
+        If width < 1 Or width > 4096 Or height < 1 Or height > 4096 Or width * height > 16777216 Then Throw New InvalidArgumentException("GPU viewport exceeds 4096 side or 16M pixels")
+        If samples <> 1 And samples <> 4 Then Throw New InvalidArgumentException("GPU samples must be 1 or 4")
+        mHandle = SG3Create(width, height, samples)
+        If mHandle = Nil Then Throw New Exception("Native 3D backend unavailable: " + CType(SG3Error(Nil), String))
+        mWidth = width
+        mHeight = height
+    End Sub
+    Private Sub RequireOpen()
+        If mHandle = Nil Then Throw New InvalidArgumentException("GPU renderer is closed")
+    End Sub
+    Private Sub Check(status As Integer)
+        If status = 0 Then Throw New Exception("Native 3D: " + CType(SG3Error(mHandle), String))
+    End Sub
+    Public Sub SetEnvironment(diffuse As Bytes, specular As Bytes)
+        Me.RequireOpen()
+        If diffuse Is Nil Or specular Is Nil Then Throw New InvalidArgumentException("Environment buffers required")
+        If diffuse.Count <> 12288 Or specular.Count <> 1048560 Then Throw New InvalidArgumentException("Environment requires diffuse16x16 and specular128 mip-chain RGBA16F cubemaps")
+        Me.Check(SG3Environment(mHandle,diffuse.DataPtr(),diffuse.Count,specular.DataPtr(),specular.Count))
+    End Sub
+    Public Sub ClearCache()
+        Me.RequireOpen()
+        For Each mesh As GPUMeshCache3D In mMeshes
+            For Each batch As GPUBatch3D In mesh.Batches
+                If batch.Id > 0 Then Me.Check(SG3MeshFree(mHandle,batch.Id))
+            Next
+        Next
+        Array.Clear(mMeshes)
+        For Each texture As GPUTextureCache3D In mTextures
+            Me.Check(SG3TextureFree(mHandle,texture.Id))
+        Next
+        Array.Clear(mTextures)
+    End Sub
+    Public Sub InvalidateMesh(mesh As Mesh3D)
+        Me.RequireOpen()
+        For i As Integer = Array.Count(mMeshes) - 1 To 0 Step -1
+            If mMeshes(i).Source Is mesh Then
+                For Each batch As GPUBatch3D In mMeshes(i).Batches
+                    If batch.Id > 0 Then Me.Check(SG3MeshFree(mHandle,batch.Id))
+                Next
+                Array.RemoveAt(mMeshes,i)
+            End If
+        Next
+    End Sub
+    Public Sub InvalidateTexture(texture As Texture3D)
+        Me.RequireOpen()
+        For i As Integer = Array.Count(mTextures) - 1 To 0 Step -1
+            If mTextures(i).Source Is texture Then
+                Me.Check(SG3TextureFree(mHandle,mTextures(i).Id))
+                Array.RemoveAt(mTextures,i)
+            End If
+        Next
+    End Sub
+    Private Function TextureId(texture As Texture3D) As Int32
+        If texture Is Nil Then Return 0
+        For Each cached As GPUTextureCache3D In mTextures
+            If cached.Source Is texture Then Return cached.Id
+        Next
+        If Array.Count(mTextures) >= 255 Then Throw New InvalidArgumentException("GPU texture cache full; clear unused resources")
+        Dim image As Picture = texture.Image
+        If image Is Nil Then Throw New InvalidArgumentException("GPU texture image is undecoded")
+        If image.Width < 1 Or image.Width > 4096 Or image.Height < 1 Or image.Height > 4096 Or image.Width * image.Height > 16777216 Then Throw New InvalidArgumentException("GPU texture exceeds limits")
+        Dim count As Integer = image.Width * image.Height * 4
+        Dim pixels As New Bytes(count)
+        If image.GetBacking(pixels.DataPtr(),count,0) <> count Then Throw New Exception("Cannot read GPU texture pixels")
+        Dim entry As New GPUTextureCache3D()
+        entry.Source = texture
+        entry.Id = SG3Texture(mHandle,pixels.DataPtr(),image.Width,image.Height,texture.WrapS,texture.WrapT,texture.MinFilter,texture.MagFilter)
+        If entry.Id <= 0 Then Throw New Exception("GPU texture upload: " + CType(SG3Error(mHandle),String))
+        Array.Append(mTextures,entry)
+        Return entry.Id
+    End Function
+    Private Function MeshCache(mesh As Mesh3D) As GPUMeshCache3D
+        For Each existing As GPUMeshCache3D In mMeshes
+            If existing.Source Is mesh Then
+                If existing.Count = mesh.Count Then Return existing
+                Me.InvalidateMesh(mesh)
+                Exit For
+            End If
+        Next
+        If Array.Count(mMeshes) >= 256 Then Throw New InvalidArgumentException("GPU mesh cache full; clear unused resources")
+        Dim cache As New GPUMeshCache3D()
+        cache.Source = mesh
+        cache.Count = mesh.Count
+        For Each face As Triangle3D In mesh.Triangles()
+            Dim inherited As Boolean = face.Tint Is Nil And face.Material Is Nil
+            Dim batch As GPUBatch3D
+            For Each group As GPUBatch3D In cache.Batches
+                If group.Material Is face.Material And group.TintInherited = inherited Then
+                    batch = group
+                    Exit For
+                End If
+            Next
+            If batch Is Nil Then
+                If Array.Count(cache.Batches) >= 256 Then Throw New InvalidArgumentException("Mesh material batch budget exceeded")
+                batch = New GPUBatch3D()
+                batch.Material = face.Material
+                batch.TintInherited = inherited
+                batch.Vertices = New Bytes()
+                Array.Append(cache.Batches,batch)
+            End If
+            Dim flat As Vec3D = GPUNormal(face)
+            Dim na As Vec3D = face.NormalA
+            Dim nb As Vec3D = face.NormalB
+            Dim nc As Vec3D = face.NormalC
+            If na Is Nil Then na = flat
+            If nb Is Nil Then nb = flat
+            If nc Is Nil Then nc = flat
+            Dim ink As Color = face.Tint
+            If ink Is Nil Or face.Material IsNot Nil Then ink = Color.White
+            GPUAppendVertex(batch.Vertices,face.A,na,face.UV0A,face.UV1A,ink)
+            GPUAppendVertex(batch.Vertices,face.B,nb,face.UV0B,face.UV1B,ink)
+            GPUAppendVertex(batch.Vertices,face.C,nc,face.UV0C,face.UV1C,ink)
+            batch.Count += 3
+        Next
+        Try
+            For Each batch As GPUBatch3D In cache.Batches
+                batch.Id = SG3Mesh(mHandle,batch.Vertices.DataPtr(),batch.Count,14)
+                If batch.Id <= 0 Then Throw New Exception("GPU mesh upload: " + CType(SG3Error(mHandle),String))
+                batch.Vertices = Nil
+            Next
+        Catch e As Exception
+            For Each batch As GPUBatch3D In cache.Batches
+                If batch.Id > 0 Then SG3MeshFree(mHandle,batch.Id)
+            Next
+            Throw e
+        End Try
+        Array.Append(mMeshes,cache)
+        Return cache
+    End Function
+    Public Function Render(scene As Scene3D, camera As Camera3D) As Picture
+        Me.RequireOpen()
+        If scene Is Nil Or camera Is Nil Then Throw New InvalidArgumentException("Scene and camera required")
+        camera.Validate()
+        If Me.ClearColor Is Nil Then Throw New InvalidArgumentException("Clear color required")
+        If Not (Me.ClearColor.R >= 0.0 And Me.ClearColor.R <= 1.0 And Me.ClearColor.G >= 0.0 And Me.ClearColor.G <= 1.0 And Me.ClearColor.B >= 0.0 And Me.ClearColor.B <= 1.0 And Me.ClearColor.A >= 0.0 And Me.ClearColor.A <= 1.0) Then Throw New InvalidArgumentException("Clear channels must be 0..1")
+        If Not (Me.Exposure > 0.0 And Me.Exposure <= 100.0) Then Throw New InvalidArgumentException("Exposure must be 0..100")
+        If Not (Me.BloomStrength >= 0.0 And Me.BloomStrength <= 10.0) Then Throw New InvalidArgumentException("Bloom strength must be finite in 0..10")
+        If Not (Me.PointIntensity >= 0.0 And Me.PointIntensity <= 1000000000.0) Then Throw New InvalidArgumentException("Point intensity must be finite in 0..1e9")
+        If Not (Me.PointRange >= 0.001 And Me.PointRange <= 1000000.0) Then Throw New InvalidArgumentException("Point range must be finite in .001..1e6")
+        If Me.PointColor Is Nil Then Throw New InvalidArgumentException("Point color required")
+        If Not (Me.PointColor.R >= 0.0 And Me.PointColor.R <= 1.0 And Me.PointColor.G >= 0.0 And Me.PointColor.G <= 1.0 And Me.PointColor.B >= 0.0 And Me.PointColor.B <= 1.0) Then Throw New InvalidArgumentException("Point RGB must be finite in 0..1")
+        If Array.Count(Me.PointLights) > 8 Then Throw New InvalidArgumentException("GPU supports at most eight point lights")
+        Dim pointShadowCount As Integer = 0
+        For Each light As PointLight3D In Me.PointLights
+            If light Is Nil Then Throw New InvalidArgumentException("Nil point light")
+            light.Validate()
+            If light.CastShadows And light.Intensity > 0.0 Then pointShadowCount += 1
+        Next
+        If Me.Shadows And pointShadowCount > 1 Then Throw New InvalidArgumentException("At most one point light can cast GPU shadows")
+        If Me.SpotLight IsNot Nil Then Me.SpotLight.Validate()
+        Dim actors As Array Of MeshActor3D = scene.Actors()
+        Dim count As Integer = 0
+        For Each actor As MeshActor3D In actors
+            If actor.Visible Then
+                actor.Validate()
+                count += actor.Mesh().Count
+            End If
+        Next
+        If count > 262144 Then Throw New InvalidArgumentException("Scene triangle budget exceeded")
+        Dim focal As Double = Math.Min(mWidth,mHeight) * camera.FocalLength
+        Dim near As Double = camera.NearPlane
+        Dim far As Double = 100000.0
+        Dim projection As Array Of Double = [2.0*focal/mWidth,0.0,0.0,0.0,0.0,2.0*focal/mHeight,0.0,0.0,0.0,0.0,-(far+near)/(far-near),-1.0,0.0,0.0,-2.0*far*near/(far-near),0.0]
+        Dim vp As Bytes = GPUPack(GPUMultiply(projection,GPUView(camera)))
+        Dim cp As Double = Math.Cos(camera.Pitch)
+        Dim eye As Bytes = GPUPack([Math.Sin(camera.Yaw)*cp*camera.Distance,camera.TargetY+Math.Sin(camera.Pitch)*camera.Distance,Math.Cos(camera.Yaw)*cp*camera.Distance])
+        Dim clear As Bytes = GPUPack([Me.ClearColor.R,Me.ClearColor.G,Me.ClearColor.B,Me.ClearColor.A])
+        ' Fixed studio directional light; orthographic shadow coverage is +/-12 world units.
+        Dim lx As Double = -0.3713906764
+        Dim ly As Double = 0.5570860145
+        Dim lz As Double = 0.7427813527
+        Dim lightDirection As Bytes = GPUPack([lx,ly,lz])
+        Dim lightView As Array Of Double = [0.894427191,0.24913644,-0.3713906764,0.0,0.0,0.830454799,0.5570860145,0.0,0.4472135955,-0.498272879,0.7427813527,0.0,0.0,0.0,-12.0,1.0]
+        Dim lightProjection As Array Of Double = [1.0/12.0,0.0,0.0,0.0,0.0,1.0/12.0,0.0,0.0,0.0,0.0,-2.0/40.0,0.0,0.0,0.0,-1.0,1.0]
+        Dim lightVP As Bytes = GPUPack(GPUMultiply(lightProjection,lightView))
+        Me.Check(SG3Begin(mHandle,vp.DataPtr(),eye.DataPtr(),clear.DataPtr(),lightVP.DataPtr(),lightDirection.DataPtr(),Me.Exposure))
+        Dim directional As Int32 = 0
+        If Me.DirectionalLightEnabled Then directional = 1
+        Me.Check(SG3Directional(mHandle,directional))
+        Me.Check(SG3Bloom(mHandle,Me.BloomStrength))
+        Me.Check(SG3ClearLights(mHandle))
+        If Array.Count(Me.PointLights) > 0 Then
+            For i As Integer = 0 To Array.Count(Me.PointLights) - 1
+                Dim light As PointLight3D = Me.PointLights(i)
+                Dim shadow As Int32 = 0
+                If Me.Shadows And light.CastShadows Then shadow = 1
+                Me.Check(SG3PointLightAt(mHandle,i,light.Position.X,light.Position.Y,light.Position.Z,light.Color.R,light.Color.G,light.Color.B,light.Intensity,light.Range,shadow))
+            Next
+        ElseIf Me.PointLight IsNot Nil Then
+            Dim shadow As Int32 = 0
+            If Me.Shadows Then shadow = 1
+            Me.Check(SG3PointLightAt(mHandle,0,Me.PointLight.X,Me.PointLight.Y,Me.PointLight.Z,Me.PointColor.R,Me.PointColor.G,Me.PointColor.B,Me.PointIntensity,Me.PointRange,shadow))
+        End If
+        If Me.SpotLight IsNot Nil Then
+            Dim light As SpotLight3D = Me.SpotLight
+            Dim shadow As Int32 = 0
+            If Me.Shadows And light.CastShadows Then shadow = 1
+            Me.Check(SG3SpotLight(mHandle,light.Position.X,light.Position.Y,light.Position.Z,light.Direction.X,light.Direction.Y,light.Direction.Z,light.Color.R,light.Color.G,light.Color.B,light.Intensity,light.Range,light.InnerAngle,light.OuterAngle,shadow))
+        End If
+        For Each actor As MeshActor3D In actors
+            If Not actor.Visible Then Continue For
+            If actor.ScaleX = 0.0 Or actor.ScaleY = 0.0 Or actor.ScaleZ = 0.0 Then Continue For
+            Dim cache As GPUMeshCache3D = Me.MeshCache(actor.Mesh())
+            Dim model As Bytes = GPUPack(GPUModel(actor))
+            For Each batch As GPUBatch3D In cache.Batches
+                Dim surface As Material3D = batch.Material
+                If actor.MaterialOverride IsNot Nil Then surface = actor.MaterialOverride
+                Dim ink As Color = Color.White
+                Dim metal As Double = actor.Metallic
+                Dim rough As Double = actor.Roughness
+                Dim emission As Color = Color.Black
+                Dim emissionStrength As Double = 1.0
+                Dim baseTexture As Int32 = 0
+                Dim mrTexture As Int32 = 0
+                Dim normalTexture As Int32 = 0
+                Dim occlusionTexture As Int32 = 0
+                Dim emissiveTexture As Int32 = 0
+                Dim alphaMode As Int32 = 0
+                Dim alphaCutoff As Double = 0.5
+                Dim doubleSided As Int32 = 1
+                Dim castShadow As Int32 = 0
+                Dim normalScale As Double = 1.0
+                Dim aoStrength As Double = 1.0
+                Dim unlit As Int32 = 0
+                Dim uv As Bytes
+                If Me.Shadows Then castShadow = 1
+                If surface IsNot Nil Then
+                    surface.Validate()
+                    ink = surface.BaseColor
+                    metal = surface.Metallic
+                    rough = surface.Roughness
+                    emission = surface.Emissive
+                    emissionStrength = surface.EmissiveStrength
+                    If surface.Unlit Then unlit = 1
+                    baseTexture = Me.TextureId(surface.BaseColorTexture)
+                    mrTexture = Me.TextureId(surface.MetallicRoughnessTexture)
+                    normalTexture = Me.TextureId(surface.NormalTexture)
+                    occlusionTexture = Me.TextureId(surface.OcclusionTexture)
+                    emissiveTexture = Me.TextureId(surface.EmissiveTexture)
+                    If String.Compare(surface.AlphaMode, "MASK", True) = 0 Then alphaMode = 1
+                    If String.Compare(surface.AlphaMode, "BLEND", True) = 0 Then alphaMode = 2
+                    If String.Compare(surface.AlphaMode, "ADD", True) = 0 Then alphaMode = 3
+                    alphaCutoff = surface.AlphaCutoff
+                    doubleSided = 0
+                    If surface.DoubleSided Then doubleSided = 1
+                    normalScale = surface.NormalScale
+                    aoStrength = surface.OcclusionStrength
+                    uv = GPUPack([1.0*surface.BaseColorTexCoord,1.0*surface.MetallicRoughnessTexCoord,1.0*surface.NormalTexCoord,1.0*surface.OcclusionTexCoord,1.0*surface.EmissiveTexCoord])
+                Else
+                    If batch.TintInherited Then ink = actor.Tint
+                    uv = GPUPack([0.0,0.0,0.0,0.0,0.0])
+                End If
+                Dim base As Bytes = GPUPack([ink.R,ink.G,ink.B,ink.A])
+                Dim emissive As Bytes = GPUPack([emission.R*emissionStrength,emission.G*emissionStrength,emission.B*emissionStrength])
+                Me.Check(SG3Submit(mHandle,batch.Id,model.DataPtr(),base.DataPtr(),metal,rough,baseTexture,mrTexture,normalTexture,occlusionTexture,emissiveTexture,emissive.DataPtr(),alphaMode,alphaCutoff,doubleSided,castShadow,uv.DataPtr(),normalScale,aoStrength,unlit))
+            Next
+        Next
+        Me.Check(SG3Render(mHandle))
+        Dim pixels As Ptr = SG3Pixels(mHandle)
+        If pixels = Nil Then Throw New Exception("Native 3D returned no pixels")
+        Return Picture.FromBuffer(pixels,mWidth*mHeight*4,0,mWidth,mHeight)
+    End Function
+    Public Sub Close()
+        If mHandle = Nil Then Return
+        SG3Free(mHandle)
+        mHandle = Nil
+        Array.Clear(mMeshes)
+        Array.Clear(mTextures)
+    End Sub
+    Public Sub Destructor()
+        Me.Close()
+    End Sub
+End Class

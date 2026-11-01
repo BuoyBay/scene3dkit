@@ -1,0 +1,30 @@
+Private Optional Declare Function SGImageDecode Lib "buoy_scene3dimages" Alias "sgimage_decode" (data As Ptr, length As Integer, mime As Integer, maxPixels As Integer) As Ptr
+Private Optional Declare Function SGImagePixels Lib "buoy_scene3dimages" Alias "sgimage_pixels" (image As Ptr) As Ptr
+Private Optional Declare Function SGImageWidth Lib "buoy_scene3dimages" Alias "sgimage_width" (image As Ptr) As Integer
+Private Optional Declare Function SGImageHeight Lib "buoy_scene3dimages" Alias "sgimage_height" (image As Ptr) As Integer
+Private Optional Declare Sub SGImageFree Lib "buoy_scene3dimages" Alias "sgimage_free" (image As Ptr)
+
+''' Decode embedded GLB PNG/JPEG bytes into owned straight-RGBA Picture storage.
+''' No file is created. MIME/signature, framing and dimensions are validated before allocation.
+Public Function DecodeGLTFImage(data As Bytes, mimeType As String, maxPixels As Integer = 16777216) As Picture
+    If Not System.IsLibraryAvailable("buoy_scene3dimages") Then Throw New UnsupportedOperationException("Embedded GLB images require the buoy_scene3dimages native decoder; build tools/build_scene3dimages.py for this target")
+    If data Is Nil Then Throw New InvalidArgumentException("GLB image bytes required")
+    If data.Count < 4 Or data.Count > 16777216 Then Throw New InvalidArgumentException("GLB encoded image outside 4..16MiB")
+    If maxPixels < 1 Or maxPixels > 16777216 Then Throw New InvalidArgumentException("GLB image pixel budget outside 1..16Mi")
+    Dim mime As Integer = 0
+    If String.Compare(mimeType, "image/png", True) = 0 Then mime = 1
+    If String.Compare(mimeType, "image/jpeg", True) = 0 Then mime = 2
+    If mime = 0 Then Throw New InvalidArgumentException("GLB images support image/png and image/jpeg only")
+    Dim handle As Ptr = SGImageDecode(data.DataPtr(), data.Count, mime, maxPixels)
+    If handle Is Nil Then Throw New InvalidArgumentException("GLB image is invalid, mismatched, truncated or exceeds its dimension/pixel budget")
+    Dim picture As Picture
+    Try
+        Dim width As Integer = SGImageWidth(handle)
+        Dim height As Integer = SGImageHeight(handle)
+        picture = Picture.FromBuffer(SGImagePixels(handle), width * height * 4, 0, width, height)
+        If picture Is Nil Then Throw New InvalidArgumentException("GLB image could not create a Picture")
+    Finally
+        SGImageFree(handle)
+    End Try
+    Return picture
+End Function
