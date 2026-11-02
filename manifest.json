@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "scene3dkit",
   "version": "0.1.0",
-  "description": "Native GPU and CPU 3D mesh scenes, PBR materials, textures, orbit cameras and bounded glTF import",
+  "description": "Render 3D scenes with meshes, materials and glTF assets",
   "libraries": [
     {
       "libName": "buoy_scene3dkit",
