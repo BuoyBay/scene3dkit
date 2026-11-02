@@ -2,7 +2,7 @@
   "schema": 1,
   "name": "scene3dkit",
   "version": "0.1.0",
-  "description": "3D scenes \u2014 meshes, materials, glTF",
+  "description": "3D meshes, materials, glTF",
   "libraries": [
     {
       "libName": "buoy_scene3dkit",

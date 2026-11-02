@@ -1,4 +1,4 @@
-# 3D scenes — meshes, materials, glTF
+# 3D meshes, materials, glTF
 
 Scene3DKit provides native GPU and CPU 3D scenes. Import
 `scene3dkit.Scene3DKit` for meshes, actors and cameras, `scene3dkit.GPU` for the
