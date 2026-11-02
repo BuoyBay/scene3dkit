@@ -1,6 +1,6 @@
 # Render 3D scenes with meshes, materials and glTF assets
 
-Scene3DKit provides native GPU and CPU 3D scenes written for Buoy. Import
+Scene3DKit provides native GPU and CPU 3D scenes. Import
 `scene3dkit.Scene3DKit` for meshes, actors and cameras, `scene3dkit.GPU` for the
 GPU renderer, and `scene3dkit.GLTF` for glTF 2 binary models. Use these qualified
 imports consistently when combining modules.
@@ -46,8 +46,6 @@ On your own machine, install Buoy and run:
 ```sh
 buoy ai init --both
 ```
-
-The generated agent files and editor settings stay local and are ignored by Git.
 
 ## Contributing
 

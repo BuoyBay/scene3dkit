@@ -82,12 +82,7 @@ is opened, independently of compilation.
 
 Verified native GPU tests include Linux Mesa llvmpipe software execution and
 macOS Apple M4 Pro hardware execution. Cross-target compiler checks are not
-native target execution. Run `tests/scene3dkit_gpu_verify.py` for the public Buoy
-consumer, and `tests/scene3dkit_gpu_review.py` for independent native pixel/lifecycle
-oracles. `tests/scene3dkit_gpu_benchmark.py` renders all57,436 triangles of each
-original balloon with studio reflections and retains PNGs/timings plus the actual
-backend string. On the sampled Linux software GPU, warm960x640frames took about
-43–49ms including shadows and readback; cold upload and GLB parsing are separate.
+native target execution. GPU timing depends on the backend, scene complexity, viewport size, upload work and readback.
 
 The GPU scene accumulates linear HDR color in an RGBA16F framebuffer before a
 fullscreen exposure/ACES/gamma pass produces the readback image. Runtime ADD
@@ -175,17 +170,15 @@ per-pixel depth buffer, textures, PBR, shadows or environment maps. The GPU path
 provides those material/depth features as described above. Large imported meshes
 can be expensive; callers should choose a deliberate triangle budget.
 
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
-
 The static glTF 2 binary importer lives in `scene3dkit.GLTF`; import that module
 alongside `scene3dkit` to use `LoadGLB(path, triangleStride=1)` or
 `DecodeGLB(bytes, triangleStride=1)`. It bakes selected-scene node transforms and
 base color into meshes. See [GLTF.md](../GLTF.md) for its supported subset and bounds.
-`tests/scene3dkit_gltf_verify.py` checks original/CPU assets and malformed fixtures;
-`tests/scene3dkit_gltf_security_verify.py` independently challenges hostile inputs
-and signed nested transforms. A local render benchmark and PNG evidence are
-reproducible with `tests/scene3dkit_benchmark.py`. Triangle stride is explicit
+Triangle stride is explicit
 sampling that leaves holes; use closed simplified meshes for interactive drawing.
 
 Embedded PNG/JPEG decoding requires a separately built `buoy_scene3dimages` runtime. This source distribution does not include those decoder slices; run `python3 tools/build_scene3dimages.py` for supported targets before packaging. Missing decoders produce an explicit unsupported-operation error.
+
+Builder context: run shared `tools/` commands from the assembled
+[BuoyBay workspace](https://github.com/BuoyBay/workspace-tools). The scripts live
+in [devtools](https://github.com/BuoyBay/devtools), alongside the shared build inputs.

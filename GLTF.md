@@ -68,9 +68,11 @@ the GPU path can use the full meshes and their smooth normals.
 
 Verification commands:
 
-Maintainers run the private validation suite before release. See the repository README for public build instructions.
-
 These seal fresh packages and execute native consumers on the host. On this
 Linux installation, set `LD_LIBRARY_PATH` to the existing JPEG8 compatibility
 directory when the installed Buoy Picture runtime needs it. Compiler checks
 on other targets are distinct from native renderer/image-decoder execution.
+
+Builder context: run shared `tools/` commands from the assembled
+[BuoyBay workspace](https://github.com/BuoyBay/workspace-tools). The scripts live
+in [devtools](https://github.com/BuoyBay/devtools), alongside the shared build inputs.
